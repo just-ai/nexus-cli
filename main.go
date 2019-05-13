@@ -7,10 +7,12 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"strconv"
 
 	"github.com/moepi/nexus-cli/registry"
 	"github.com/urfave/cli"
 	"github.com/blang/semver"
+	"github.com/dustin/go-humanize"
 )
 
 const (
@@ -47,6 +49,20 @@ func main() {
 				{
 					Name:  "ls",
 					Usage: "List all images in repository",
+					Flags: []cli.Flag{
+						cli.StringSliceFlag{
+							Name:  "expression, e",
+							Usage: "Filter images by regular expression",
+						},
+						cli.BoolFlag{
+							Name:  "invert, v",
+							Usage: "Invert filter results",
+						},
+						cli.BoolFlag{
+							Name:  "images-only, i",
+							Usage: "Print only images, useful for scripts",
+						},
+					},
 					Action: func(c *cli.Context) error {
 						return listImages(c)
 					},
@@ -85,6 +101,18 @@ func main() {
 						},
 						cli.StringFlag{
 							Name: "tag, t",
+						},
+						cli.StringSliceFlag{
+							Name:  "expression, e",
+							Usage: "Filter tags by regular expression",
+						},
+						cli.BoolFlag{
+							Name:  "invert, v",
+							Usage: "Invert results filter expressions",
+						},
+						cli.BoolFlag{
+							Name:	 "humanize",
+							Usage: "Prints size as human readable",
 						},
 					},
 					Action: func(c *cli.Context) error {
@@ -178,14 +206,20 @@ func listImages(c *cli.Context) error {
 	if err != nil {
 		return cli.NewExitError(err.Error(), 1)
 	}
+	images, err = filterStringsByRegex(images, c.StringSlice("expression"), c.Bool("invert"))
+	if err != nil {
+		return cli.NewExitError(err.Error(), 1)
+	}
 	for _, image := range images {
 		fmt.Println(image)
 	}
-	fmt.Printf("Total images: %d\n", len(images))
+	if (!c.Bool("images-only")){
+		fmt.Printf("Total images: %d\n", len(images))
+	}
 	return nil
 }
 
-func filterTagsByRegex(tags []string, expressions []string, invert bool) ([]string, error) {
+func filterStringsByRegex(tags []string, expressions []string, invert bool) ([]string, error) {
 	var retTags []string
 	if len(expressions) == 0 {
 		return tags, nil
@@ -232,7 +266,7 @@ func listTagsByImage(c *cli.Context) error {
 	tags, err := r.ListTagsByImage(imgName)
 
 	// filter tags by expressions
-	tags, err = filterTagsByRegex(tags, c.StringSlice("expression"), c.Bool("invert"))
+	tags, err = filterStringsByRegex(tags, c.StringSlice("expression"), c.Bool("invert"))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -257,19 +291,59 @@ func showImageInfo(c *cli.Context) error {
 	if err != nil {
 		return cli.NewExitError(err.Error(), 1)
 	}
-	if imgName == "" || tag == "" {
+	if imgName == "" {
 		cli.ShowSubcommandHelp(c)
 	}
-	manifest, err := r.ImageManifest(imgName, tag)
-	if err != nil {
-		return cli.NewExitError(err.Error(), 1)
+	var configSize int64
+	var layers = make(map[string]int64)
+	var totalLayersSize int64
+
+	var handleTag = func(tag string) error {
+		manifest, err := r.ImageManifest(imgName, tag)
+		if err != nil {
+			return cli.NewExitError(err.Error(), 1)
+		}
+		configSize += manifest.Config.Size
+		for _, layer := range manifest.Layers {
+			_, ok := layers[layer.Digest]
+			if !ok {
+				layers[layer.Digest] = layer.Size
+			}
+		}
+	return nil
 	}
+
+	if tag == "" {
+		tags, err := r.ListTagsByImage(imgName)
+
+		// filter tags by expressions
+		tags, err = filterStringsByRegex(tags, c.StringSlice("expression"), c.Bool("invert"))
+		if err != nil {
+			log.Fatal(err)
+		}
+		for _,tag := range tags {
+			handleTag(tag)
+		}
+	} else {
+		handleTag(tag)
+	}
+
+	var humanize = func(b int64) string {
+		if (c.Bool("humanize")){
+			return humanize.Bytes(uint64(b))
+		}
+		return strconv.FormatInt(b, 10)
+	}
+
 	fmt.Printf("Image: %s:%s\n", imgName, tag)
-	fmt.Printf("Size: %d\n", manifest.Config.Size)
+	fmt.Printf("Size: %s\n", humanize(configSize))
 	fmt.Println("Layers:")
-	for _, layer := range manifest.Layers {
-		fmt.Printf("\t%s\t%d\n", layer.Digest, layer.Size)
+	for digest, size := range layers {
+		totalLayersSize += size
+		fmt.Printf("\t%s\t%s\n", digest, humanize(size))
 	}
+	fmt.Printf("Total layers size: %s\n", humanize(totalLayersSize))
+	fmt.Printf("Total size: %s\n", humanize(totalLayersSize + configSize))
 	return nil
 }
 
@@ -307,7 +381,7 @@ func deleteImages(c *cli.Context) error {
 
 	// Get list of tags and filter them by all expressions provided
 	tags, err := r.ListTagsByImage(imgName)
-	tags, err = filterTagsByRegex(tags, c.StringSlice("expression"), invert)
+	tags, err = filterStringsByRegex(tags, c.StringSlice("expression"), invert)
 	if err != nil {
 		fmt.Fprintf(c.App.Writer, "Could not filter tags by regular expressions: %s\n", err)
 		return err
