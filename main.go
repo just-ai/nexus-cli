@@ -9,7 +9,7 @@ import (
 	"strings"
 	"strconv"
 
-	"github.com/moepi/nexus-cli/registry"
+	"nexus-cli/registry"
 	"github.com/urfave/cli"
 	"github.com/blang/semver"
 	"github.com/dustin/go-humanize"

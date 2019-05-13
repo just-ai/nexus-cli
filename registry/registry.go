@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 
 	"github.com/BurntSushi/toml"
 	"github.com/caarlos0/env"
@@ -49,7 +50,10 @@ type LayerInfo struct {
 // NewRegistry uses local .credentials file or environment variables to return a Registry struct
 func NewRegistry() (Registry, error) {
 	r := Registry{}
-	toml.DecodeFile(credentialsFile, &r)
+	_, err := os.Stat(credentialsFile)
+	if err == nil {
+		toml.DecodeFile(credentialsFile, &r)
+	}
 
 	// Parse environment variables by struct `env`-tags
 	env.Parse(&r)
