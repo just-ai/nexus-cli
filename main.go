@@ -6,13 +6,14 @@ import (
 	"log"
 	"os"
 	"regexp"
-	"strings"
 	"strconv"
+	"strings"
+	"sync"
 
-	"nexus-cli/registry"
-	"github.com/urfave/cli"
 	"github.com/blang/semver"
 	"github.com/dustin/go-humanize"
+	"github.com/just-ai/nexus-cli/registry"
+	"github.com/urfave/cli"
 )
 
 const (
@@ -27,7 +28,7 @@ func main() {
 	app := cli.NewApp()
 	app.Name = "Nexus CLI"
 	app.Usage = "Manage Docker Private Registry on Nexus"
-	app.Version = "1.0.0-beta-2"
+	app.Version = "1.1.0"
 	app.Authors = []cli.Author{
 		cli.Author{
 			Name:  "Mohamed Labouardy",
@@ -84,8 +85,20 @@ func main() {
 							Usage: "Invert filter results",
 						},
 						cli.StringFlag{
-							Name: "sort, s",
+							Name:  "sort, s",
 							Usage: "Sort tags by semantic version, assuming all tags are semver except latest.",
+						},
+						cli.BoolFlag{
+							Name:  "with-sha, d",
+							Usage: "Prtin tag with its sha",
+						},
+						cli.BoolFlag{
+							Name:  "tags-only, t",
+							Usage: "Print only tags list without other messages, useful for scripts",
+						},
+						cli.BoolFlag{
+							Name:  "full, f",
+							Usage: "Print tag with image name",
 						},
 					},
 					Action: func(c *cli.Context) error {
@@ -111,7 +124,7 @@ func main() {
 							Usage: "Invert results filter expressions",
 						},
 						cli.BoolFlag{
-							Name:	 "humanize",
+							Name:  "humanize",
 							Usage: "Prints size as human readable",
 						},
 					},
@@ -225,7 +238,7 @@ func listImages(c *cli.Context) error {
 	for _, image := range images {
 		fmt.Println(image)
 	}
-	if (!c.Bool("images-only")){
+	if !c.Bool("images-only") {
 		fmt.Printf("Total images: %d\n", len(images))
 	}
 	return nil
@@ -289,10 +302,42 @@ func listTagsByImage(c *cli.Context) error {
 	if err != nil {
 		return cli.NewExitError(err.Error(), 1)
 	}
-	for _, tag := range tags {
-		fmt.Println(tag)
+	shaTag := make(map[string]string, len(tags))
+	if c.Bool("with-sha") {
+		var wg sync.WaitGroup
+		lock := sync.RWMutex{}
+
+		wg.Add(len(tags))
+		for _, tag := range tags {
+			go func(tag string) {
+				defer wg.Done()
+				defer lock.Unlock()
+				sha, err := r.GetImageSHA(imgName, tag)
+				if err != nil {
+					panic(err.Error())
+				}
+				lock.Lock()
+				shaTag[tag] = sha
+			}(tag)
+		}
+		wg.Wait()
 	}
-	fmt.Printf("There are %d images for %s\n", len(tags), imgName)
+	for _, tag := range tags {
+		tagFmt := ""
+		if c.Bool("full") {
+			tagFmt = imgName + ":"
+		}
+		tagFmt = tagFmt + tag
+
+		if c.Bool("with-sha") {
+
+			tagFmt = tagFmt + " " + shaTag[tag]
+		}
+		fmt.Println(tagFmt)
+	}
+	if !c.Bool("tags-only") {
+		fmt.Printf("There are %d images for %s\n", len(tags), imgName)
+	}
 	return nil
 }
 
@@ -322,7 +367,7 @@ func showImageInfo(c *cli.Context) error {
 				layers[layer.Digest] = layer.Size
 			}
 		}
-	return nil
+		return nil
 	}
 
 	if tag == "" {
@@ -333,7 +378,7 @@ func showImageInfo(c *cli.Context) error {
 		if err != nil {
 			log.Fatal(err)
 		}
-		for _,tag := range tags {
+		for _, tag := range tags {
 			handleTag(tag)
 		}
 	} else {
@@ -341,7 +386,7 @@ func showImageInfo(c *cli.Context) error {
 	}
 
 	var humanize = func(b int64) string {
-		if (c.Bool("humanize")){
+		if c.Bool("humanize") {
 			return humanize.Bytes(uint64(b))
 		}
 		return strconv.FormatInt(b, 10)
@@ -355,7 +400,7 @@ func showImageInfo(c *cli.Context) error {
 		fmt.Printf("\t%s\t%s\n", digest, humanize(size))
 	}
 	fmt.Printf("Total layers size: %s\n", humanize(totalLayersSize))
-	fmt.Printf("Total size: %s\n", humanize(totalLayersSize + configSize))
+	fmt.Printf("Total size: %s\n", humanize(totalLayersSize+configSize))
 	return nil
 }
 
@@ -468,7 +513,7 @@ func showTotalImageSize(c *cli.Context) error {
 	}
 	return nil
 }
-func getSortComparisonStrategy(sort string) func(str1, str2 string) bool{
+func getSortComparisonStrategy(sort string) func(str1, str2 string) bool {
 	var compareStringNumber func(str1, str2 string) bool
 
 	if sort == "default" {
@@ -487,11 +532,11 @@ func getSortComparisonStrategy(sort string) func(str1, str2 string) bool{
 			}
 			version1, err1 := semver.Make(str1)
 			if err1 != nil {
-			    fmt.Printf("Error parsing version1: %q\n", err1)
+				fmt.Printf("Error parsing version1: %q\n", err1)
 			}
 			version2, err2 := semver.Make(str2)
 			if err2 != nil {
-			    fmt.Printf("Error parsing version2: %q\n", err2)
+				fmt.Printf("Error parsing version2: %q\n", err2)
 			}
 			return version1.LT(version2)
 		}
